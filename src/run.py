@@ -13,6 +13,40 @@ from options import Options
 from eval import *
 
 
+def _compute_token_logprobs_from_ids(model, tokenizer, ids_tensor):
+    """Return per-token log probabilities for the provided token ids."""
+    model.eval()
+    ids_tensor = ids_tensor.to(model.device)
+
+    with torch.no_grad():
+        outputs = model(ids_tensor)
+        logits = outputs.logits  # (1, seq_len, vocab)
+        log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+
+    token_ids = ids_tensor[0].tolist()
+    token_logprobs = []
+    for idx, token_id in enumerate(token_ids):
+        if idx == 0:
+            token_logprobs.append(None)
+        else:
+            token_logprobs.append(log_probs[0, idx - 1, token_id].item())
+    return token_logprobs
+
+
+def calculatePerplexity_local(sentence, model, tokenizer):
+    """Compute perplexity-style metrics and token logprobs using the local transformer model."""
+    model_inputs = tokenizer(sentence, return_tensors="pt")
+    input_ids = model_inputs.input_ids.to(model.device)
+    token_logprobs = _compute_token_logprobs_from_ids(model, tokenizer, input_ids)
+
+    valid_logprobs = [lp for lp in token_logprobs if lp is not None]
+    if not valid_logprobs:
+        raise ValueError("No valid token log probabilities could be computed for the input sentence.")
+
+    p1 = np.exp(-np.mean(valid_logprobs))
+    return p1, valid_logprobs, np.mean(valid_logprobs)
+
+
 def load_model(name1, name2):
     if "davinci" in name1:
         model1 = None
@@ -35,22 +69,25 @@ def calculatePerplexity_gpt3(prompt, modelname):
     prompt = prompt.replace('\x00','')
     responses = None
     # Put your API key here
-    openai.api_key = "YOUR_API_KEY" # YOUR_API_KEY
+
+    openai.api_key = "" # YOUR_API_KEY
     while responses is None:
         try:
-            responses = openai.Completion.create(
-                        engine=modelname, 
-                        prompt=prompt,
+            responses = openai.chat.completions.create(
+                        model=modelname, 
+                        messages=[{"role": "user", "content": prompt}],
                         max_tokens=0,
                         temperature=1.0,
-                        logprobs=5,
-                        echo=True)
-        except openai.error.InvalidRequestError:
-            print("too long for openai API")
+                        logprobs=True,
+                        top_logprobs=5,
+                        stream=False)
+        except Exception as e:
+            print(f"unexpected error: {e}")
     data = responses["choices"][0]["logprobs"]
     all_prob = [d for d in data["token_logprobs"] if d is not None]
     p1 = np.exp(-np.mean(all_prob))
     return p1, all_prob, np.mean(all_prob)
+
 
      
 def calculatePerplexity(sentence, model, tokenizer, gpu):
@@ -84,18 +121,18 @@ def inference(model1, model2, tokenizer1, tokenizer2, text, ex, modelname1, mode
         p1, all_prob, p1_likelihood = calculatePerplexity_gpt3(text, modelname1) 
         p_lower, _, p_lower_likelihood = calculatePerplexity_gpt3(text.lower(), modelname1)
     else:
-        p1, all_prob, p1_likelihood = calculatePerplexity(text, model1, tokenizer1, gpu=model1.device)
-        p_lower, _, p_lower_likelihood = calculatePerplexity(text.lower(), model1, tokenizer1, gpu=model1.device)
+        p1, all_prob, p1_likelihood = calculatePerplexity_local(text, model1, tokenizer1)
+        p_lower, _, p_lower_likelihood = calculatePerplexity_local(text.lower(), model1, tokenizer1)
 
     if "davinci" in modelname2:
         p_ref, all_prob_ref, p_ref_likelihood = calculatePerplexity_gpt3(text, modelname2)
     else:
-        p_ref, all_prob_ref, p_ref_likelihood = calculatePerplexity(text, model2, tokenizer2, gpu=model2.device)
+        p_ref, all_prob_ref, p_ref_likelihood = calculatePerplexity_local(text, model2, tokenizer2)
    
    # ppl
     pred["ppl"] = p1
-    # Ratio of log ppl of large and small models
-    pred["ppl/Ref_ppl (calibrate PPL to the reference model)"] = p1_likelihood-p_ref_likelihood
+    # Ratio of log ppl of large and small models (calibrate PPL to the reference model)
+    pred["ppl/Ref_ppl"] = p1_likelihood-p_ref_likelihood
 
 
     # Ratio of log ppl of lower-case and normal-case
@@ -131,11 +168,18 @@ if __name__ == '__main__':
 
     # load model and data
     model1, model2, tokenizer1, tokenizer2 = load_model(args.target_model, args.ref_model)
+    print(type(model1))
+    
     if "jsonl" in args.data:
         data = load_jsonl(f"{args.data}")
-    else: # load data from huggingface
-        dataset = load_dataset(args.data, split=f"WikiMIA_length{args.length}")
-        data = convert_huggingface_data_to_list_dic(dataset)
+    else:  # load data produced by data.py (JSONL stored under the output dir)
+        jsonl_path = "data/recent_wikimia/recent_wikimia.jsonl"
+        dataset = load_dataset("json", data_files=str(jsonl_path))
+        data = convert_huggingface_data_to_list_dic(dataset["train"])
+        
+        # uncomment this code to reproduce the results on the original WikiMIA dataset
+        # dataset = load_dataset(args.data, split=f"WikiMIA_length{args.length}")
+        # data = convert_huggingface_data_to_list_dic(dataset)
 
     all_output = evaluate_data(data, model1, model2, tokenizer1, tokenizer2, args.key_name, args.target_model, args.ref_model)
     fig_fpr_tpr(all_output, args.output_dir)
