@@ -21,30 +21,31 @@ def _compute_token_logprobs_from_ids(model, tokenizer, ids_tensor):
     with torch.no_grad():
         outputs = model(ids_tensor)
         logits = outputs.logits  # (1, seq_len, vocab)
-        log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+        probs = torch.nn.functional.softmax(logits[0, :-1], dim=-1)
+        log_probs = torch.nn.functional.log_softmax(logits[0, :-1], dim=-1)
 
-    token_ids = ids_tensor[0].tolist()
-    token_logprobs = []
-    for idx, token_id in enumerate(token_ids):
-        if idx == 0:
-            token_logprobs.append(None)
-        else:
-            token_logprobs.append(log_probs[0, idx - 1, token_id].item())
-    return token_logprobs
+    input_ids = ids_tensor[0][1:].unsqueeze(-1)
+    token_log_probs = log_probs.gather(dim=-1, index=input_ids).squeeze(-1)
+
+    mu = (probs * log_probs).sum(dim=-1)
+    sigma = (probs * torch.square(log_probs)).sum(-1) - torch.square(mu)
+    
+    token_log_probs_mink_plus = (token_log_probs - mu) / sigma.sqrt()
+
+    return token_log_probs.cpu(), token_log_probs_mink_plus.cpu()
 
 
 def calculatePerplexity_local(sentence, model, tokenizer):
     """Compute perplexity-style metrics and token logprobs using the local transformer model."""
     model_inputs = tokenizer(sentence, return_tensors="pt")
     input_ids = model_inputs.input_ids.to(model.device)
-    token_logprobs = _compute_token_logprobs_from_ids(model, tokenizer, input_ids)
+    token_log_probs, token_log_probs_mink_plus = _compute_token_logprobs_from_ids(model, tokenizer, input_ids)
 
-    valid_logprobs = [lp for lp in token_logprobs if lp is not None]
-    if not valid_logprobs:
-        raise ValueError("No valid token log probabilities could be computed for the input sentence.")
+    arr = token_log_probs.numpy()
 
-    p1 = np.exp(-np.mean(valid_logprobs))
-    return p1, valid_logprobs, np.mean(valid_logprobs)
+    p1 = np.exp(-np.mean(arr))
+
+    return p1, token_log_probs, token_log_probs_mink_plus, np.mean(arr)
 
 
 def load_model(name1, name2):
@@ -121,19 +122,18 @@ def inference(model1, model2, tokenizer1, tokenizer2, text, ex, modelname1, mode
         p1, all_prob, p1_likelihood = calculatePerplexity_gpt3(text, modelname1) 
         p_lower, _, p_lower_likelihood = calculatePerplexity_gpt3(text.lower(), modelname1)
     else:
-        p1, all_prob, p1_likelihood = calculatePerplexity_local(text, model1, tokenizer1)
-        p_lower, _, p_lower_likelihood = calculatePerplexity_local(text.lower(), model1, tokenizer1)
+        p1, all_prob, all_prob_mink_plus, p1_likelihood = calculatePerplexity_local(text, model1, tokenizer1)
+        p_lower, _, all_prob_mink_plus_lower, p_lower_likelihood = calculatePerplexity_local(text.lower(), model1, tokenizer1)
 
     if "davinci" in modelname2:
         p_ref, all_prob_ref, p_ref_likelihood = calculatePerplexity_gpt3(text, modelname2)
     else:
-        p_ref, all_prob_ref, p_ref_likelihood = calculatePerplexity_local(text, model2, tokenizer2)
+        p_ref, all_prob_ref, all_prob_mink_plus_ref, p_ref_likelihood = calculatePerplexity_local(text, model2, tokenizer2)
    
    # ppl
     pred["ppl"] = p1
     # Ratio of log ppl of large and small models (calibrate PPL to the reference model)
     pred["ppl/Ref_ppl"] = p1_likelihood-p_ref_likelihood
-
 
     # Ratio of log ppl of lower-case and normal-case
     pred["ppl/lowercase_ppl"] = -(np.log(p_lower) / np.log(p1)).item()
@@ -146,7 +146,14 @@ def inference(model1, model2, tokenizer1, tokenizer2, text, ex, modelname1, mode
         topk_prob = np.sort(all_prob)[:k_length]
         pred[f"Min_{ratio*100}% Prob"] = -np.mean(topk_prob).item()
 
+    # min-k++ prob
+    for ratio in [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]:
+        k_length = int(len(all_prob_mink_plus)*ratio)
+        topk_prob = np.sort(all_prob_mink_plus)[:k_length]
+        pred[f"Min_{ratio*100}++% Prob"] = -np.mean(topk_prob).item()
+
     ex["pred"] = pred
+
     return ex
 
 def evaluate_data(test_data, model1, model2, tokenizer1, tokenizer2, col_name, modelname1, modelname2):
@@ -177,10 +184,10 @@ if __name__ == '__main__':
         dataset = load_dataset("json", data_files=str(jsonl_path))
         data = convert_huggingface_data_to_list_dic(dataset["train"])
         
-        # uncomment this code to reproduce the results on the original WikiMIA dataset
+        # this code reproduces the results on the original WikiMIA dataset
         # dataset = load_dataset(args.data, split=f"WikiMIA_length{args.length}")
         # data = convert_huggingface_data_to_list_dic(dataset)
 
     all_output = evaluate_data(data, model1, model2, tokenizer1, tokenizer2, args.key_name, args.target_model, args.ref_model)
-    fig_fpr_tpr(all_output, args.output_dir)
+    fig_fpr_tpr(all_output, args.output_dir, args.dataset_year)
 

@@ -22,7 +22,7 @@ import random
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, TextIO
 
 import requests
 from datasets import Dataset
@@ -160,6 +160,7 @@ def build_samples(
 	snippet_words: int,
 	min_year: int = 2015,
 	seed: int = 2025,
+ 	temp_log_path: Optional[Path] = None,
 ) -> List[ArticleSample]:
 	random.seed(seed)
 	collected: List[ArticleSample] = []
@@ -179,98 +180,122 @@ def build_samples(
 			label_counts[0] >= desired_label_zero and label_counts[1] >= desired_label_one
 		)
 
-	while attempts < max_attempts:
-		attempts += 1
-		titles = fetch_random_titles(batch_size=10)
-		random.shuffle(titles)
-		for title in titles:
-			if title in seen_titles:
-				continue
-			seen_titles.add(title)
+	temp_log_file: Optional[TextIO] = None
+	if temp_log_path is not None:
+		temp_log_path.parent.mkdir(parents=True, exist_ok=True)
+		temp_log_file = temp_log_path.open("a", encoding="utf-8")
 
-			text = fetch_text_with_wikipedia_api(title, snippet_words)
-			if text is None:
-				text = fetch_text_via_mediawiki(title, snippet_words)
-			if text is None:
-				continue
-			words = text.split()
-			if len(words) < snippet_words:
-				continue
+	def log_sample(sample: ArticleSample) -> None:
+		# Persist each sample so progress survives interruptions.
+		if temp_log_file is None:
+			return
+		temp_log_file.write(json.dumps(sample.to_dict(), ensure_ascii=False) + "\n")
+		temp_log_file.flush()
 
-			latest_timestamp = fetch_latest_timestamp(title)
-			if latest_timestamp is None:
-				continue
-			latest_dt = datetime.fromisoformat(latest_timestamp.replace("Z", "+00:00"))
-			if latest_dt.year < min_year:
-				continue  # favor relatively recent material
-
-			creation_timestamp = fetch_creation_timestamp(title)
-			if creation_timestamp is None:
-				continue
-			creation_dt = datetime.fromisoformat(creation_timestamp.replace("Z", "+00:00"))
-
-			label = 1 if creation_dt.year < 2025 else 0
-			if label == 0:
-				print(f"Article '{title}' is labeled 0 (created in {creation_dt.year}).")
-				remaining_quota = max(0, desired_label_zero - label_counts[0])
-				if remaining_quota <= 0:
+	try:
+		while attempts < max_attempts:
+			attempts += 1
+			titles = fetch_random_titles(batch_size=10)
+			print()
+			print(f"# 1 labels: {label_counts[1]}, # 0 labels: {label_counts[0]}, total collected: {len(collected)}")
+			random.shuffle(titles)
+			for title in titles:
+				if title in seen_titles:
 					continue
-				available_chunks = len(words) // snippet_words
-				chunks_to_use = min(CHUNKS_PER_LABEL_ZERO, available_chunks, remaining_quota)
-				if chunks_to_use <= 0:
+				seen_titles.add(title)
+
+				text = fetch_text_with_wikipedia_api(title, snippet_words)
+				if text is None:
+					text = fetch_text_via_mediawiki(title, snippet_words)
+				if text is None:
 					continue
-				for chunk_idx in range(chunks_to_use):
-					start = chunk_idx * snippet_words
-					end = start + snippet_words
-					snippet = " ".join(words[start:end])
-					collected.append(
-						ArticleSample(
+				words = text.split()
+				if len(words) < snippet_words:
+					continue
+
+				latest_timestamp = fetch_latest_timestamp(title)
+				if latest_timestamp is None:
+					continue
+				latest_dt = datetime.fromisoformat(latest_timestamp.replace("Z", "+00:00"))
+				# if latest_dt.year < min_year:
+				# 	continue  # favor relatively recent material
+
+				creation_timestamp = fetch_creation_timestamp(title)
+				if creation_timestamp is None:
+					continue
+				creation_dt = datetime.fromisoformat(creation_timestamp.replace("Z", "+00:00"))
+				print(f"Article '{title}' created in {creation_dt.year}, latest edit in {latest_dt.year}.")
+				if creation_dt.year < 2023 and latest_dt.year < 2023:
+					label = 1
+				elif creation_dt.year == 2023 and latest_dt.year == 2023:
+					label = 0
+				else:
+					continue  # skip articles that don't cleanly fit either category
+
+				if label == 0:
+					print(f"Article '{title}' is labeled 0 (created in {creation_dt.year}).")
+					remaining_quota = max(0, desired_label_zero - label_counts[0])
+					if remaining_quota <= 0:
+						continue
+					available_chunks = len(words) // snippet_words
+					chunks_to_use = min(CHUNKS_PER_LABEL_ZERO, available_chunks, remaining_quota)
+					if chunks_to_use <= 0:
+						continue
+					for chunk_idx in range(chunks_to_use):
+						start = chunk_idx * snippet_words
+						end = start + snippet_words
+						snippet = " ".join(words[start:end])
+						sample = ArticleSample(
 							title=title,
 							input_text=snippet,
 							label=0,
 							created_at=creation_timestamp,
 							last_modified=latest_timestamp,
 						)
-					)
-				label_counts[0] += chunks_to_use
-				print(f"Added {chunks_to_use} chunks for label 0 (total now {label_counts[0]}).")
-				break
-			else:
-				if label_counts[1] >= desired_label_one:
-					continue
-				snippet = " ".join(words[:snippet_words])
-				collected.append(
-					ArticleSample(
+						collected.append(sample)
+						log_sample(sample)
+					label_counts[0] += chunks_to_use
+					print(f"Added {chunks_to_use} chunks for label 0 (total now {label_counts[0]}).")
+					break
+				else:
+					if label_counts[1] >= desired_label_one:
+						continue
+					snippet = " ".join(words[:snippet_words])
+					sample = ArticleSample(
 						title=title,
 						input_text=snippet,
 						label=1,
 						created_at=creation_timestamp,
 						last_modified=latest_timestamp,
 					)
-				)
-				label_counts[1] += 1
-				print(f"Added 1 chunk for label 1 (total now {label_counts[1]}).")
+					collected.append(sample)
+					log_sample(sample)
+					label_counts[1] += 1
+					print(f"Added 1 chunk for label 1 (total now {label_counts[1]}).")
+				if goals_met():
+					break
+
 			if goals_met():
 				break
 
-		if goals_met():
-			break
+		if len(collected) < min_total:
+			raise RuntimeError(
+				"Collected {total} samples (label0={label0}, label1={label1}) after {attempts} attempts; "
+				"try adjusting parameters or increasing max attempts."
+				.format(total=len(collected), label0=label_counts[0], label1=label_counts[1], attempts=attempts)
+			)
 
-	if len(collected) < min_total:
-		raise RuntimeError(
-			"Collected {total} samples (label0={label0}, label1={label1}) after {attempts} attempts; "
-			"try adjusting parameters or increasing max attempts."
-			.format(total=len(collected), label0=label_counts[0], label1=label_counts[1], attempts=attempts)
-		)
+		if abs(label_counts[0] - label_counts[1]) > BALANCE_TOLERANCE:
+			print(
+				f"Warning: label imbalance remains (label0={label_counts[0]}, label1={label_counts[1]}). "
+				"Consider increasing --count or retries for better balance."
+			)
 
-	if abs(label_counts[0] - label_counts[1]) > BALANCE_TOLERANCE:
-		print(
-			f"Warning: label imbalance remains (label0={label_counts[0]}, label1={label_counts[1]}). "
-			"Consider increasing --count or retries for better balance."
-		)
-
-	random.shuffle(collected)
-	return collected
+		random.shuffle(collected)
+		return collected
+	finally:
+		if temp_log_file is not None:
+			temp_log_file.close()
 
 
 def save_outputs(samples: Iterable[ArticleSample], output_dir: Path) -> None:
@@ -313,6 +338,7 @@ def main() -> None:
 		target_count=args.count,
 		snippet_words=args.snippet_words,
 		min_year=args.min_year,
+		temp_log_path=args.output_dir / "temp_articles.jsonl",
 	)
 	save_outputs(samples, args.output_dir)
 	print(f"Collected {len(samples)} samples with {args.snippet_words}-word snippets.")

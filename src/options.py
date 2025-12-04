@@ -17,7 +17,7 @@ class Options():
         self.parser.add_argument('--data', type=str, default="swj0419/WikiMIA", help="the dataset to evaluate: default is WikiMIA")
         self.parser.add_argument('--length', type=int, default=64, help="the length of the input text to evaluate. Choose from 32, 64, 128, 256")
         self.parser.add_argument('--key_name', type=str, default="input", help="the key name corresponding to the input text. Selecting from: input, parapgrase")
-
+        self.parser.add_argument('--dataset_year', type=str, default="2025", help="the dataset year to evaluate: 2023 or 2024 or 2025")
 
 
 

@@ -47,7 +47,7 @@ def do_plot(prediction, answers, sweep_fn=sweep, metric='auc', legend="", output
     return legend, auc,acc, low
 
 
-def fig_fpr_tpr(all_output, output_dir):
+def fig_fpr_tpr(all_output, output_dir, dataset_year="2025"):
     print("output_dir", output_dir)
     answers = []
     metric2predictions = defaultdict(list)
@@ -59,7 +59,7 @@ def fig_fpr_tpr(all_output, output_dir):
             metric2predictions[metric].append(ex["pred"][metric])
     
     plt.figure(figsize=(4,3))
-    with open(f"{output_dir}/auc.txt", "w") as f:
+    with open(f"{output_dir}/auc_{dataset_year}.txt", "w") as f:
         for metric, predictions in metric2predictions.items():
             legend, auc, acc, low = do_plot(predictions, answers, legend=metric, metric='auc', output_dir=output_dir)
             f.write('%s   AUC %.4f, Accuracy %.4f, TPR@0.1%%FPR of %.4f\n'%(legend, auc, acc, low))
@@ -73,7 +73,7 @@ def fig_fpr_tpr(all_output, output_dir):
     plt.plot([0, 1], [0, 1], ls='--', color='gray')
     plt.subplots_adjust(bottom=.18, left=.18, top=.96, right=.96)
     plt.legend(fontsize=8)
-    plt.savefig(f"{output_dir}/auc.png")
+    plt.savefig(f"{output_dir}/auc_{dataset_year}.png")
 
 
 def load_jsonl(input_path):
