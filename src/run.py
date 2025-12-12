@@ -131,15 +131,16 @@ def inference(model1, model2, tokenizer1, tokenizer2, text, ex, modelname1, mode
         p_ref, all_prob_ref, all_prob_mink_plus_ref, p_ref_likelihood = calculatePerplexity_local(text, model2, tokenizer2)
    
    # ppl
-    pred["ppl"] = p1
-    # Ratio of log ppl of large and small models (calibrate PPL to the reference model)
-    pred["ppl/Ref_ppl"] = p1_likelihood-p_ref_likelihood
+    # pred["ppl"] = p1
+    # # Ratio of log ppl of large and small models (calibrate PPL to the reference model)
+    # pred["ppl/Ref_ppl"] = p1_likelihood-p_ref_likelihood
 
-    # Ratio of log ppl of lower-case and normal-case
-    pred["ppl/lowercase_ppl"] = -(np.log(p_lower) / np.log(p1)).item()
-    # Ratio of log ppl of large and zlib
-    zlib_entropy = len(zlib.compress(bytes(text, 'utf-8')))
-    pred["ppl/zlib"] = np.log(p1)/zlib_entropy
+    # # Ratio of log ppl of lower-case and normal-case
+    # pred["ppl/lowercase_ppl"] = -(np.log(p_lower) / np.log(p1)).item()
+    # # Ratio of log ppl of large and zlib
+    # zlib_entropy = len(zlib.compress(bytes(text, 'utf-8')))
+    # pred["ppl/zlib"] = np.log(p1)/zlib_entropy
+
     # min-k prob
     for ratio in [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]:
         k_length = int(len(all_prob)*ratio)
@@ -180,13 +181,13 @@ if __name__ == '__main__':
     if "jsonl" in args.data:
         data = load_jsonl(f"{args.data}")
     else:  # load data produced by data.py (JSONL stored under the output dir)
-        jsonl_path = "data/recent_wikimia/recent_wikimia.jsonl"
-        dataset = load_dataset("json", data_files=str(jsonl_path))
-        data = convert_huggingface_data_to_list_dic(dataset["train"])
+        # jsonl_path = "data/recent_wikimia/recent_wikimia.jsonl"
+        # dataset = load_dataset("json", data_files=str(jsonl_path))
+        # data = convert_huggingface_data_to_list_dic(dataset["train"])
         
         # this code reproduces the results on the original WikiMIA dataset
-        # dataset = load_dataset(args.data, split=f"WikiMIA_length{args.length}")
-        # data = convert_huggingface_data_to_list_dic(dataset)
+        dataset = load_dataset(args.data, split=f"WikiMIA_length{args.length}")
+        data = convert_huggingface_data_to_list_dic(dataset)
 
     all_output = evaluate_data(data, model1, model2, tokenizer1, tokenizer2, args.key_name, args.target_model, args.ref_model)
     fig_fpr_tpr(all_output, args.output_dir, args.dataset_year)

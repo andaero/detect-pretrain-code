@@ -57,23 +57,45 @@ def fig_fpr_tpr(all_output, output_dir, dataset_year="2025"):
             if ("raw" in metric) and ("clf" not in metric):
                 continue
             metric2predictions[metric].append(ex["pred"][metric])
-    
-    plt.figure(figsize=(4,3))
-    with open(f"{output_dir}/auc_{dataset_year}.txt", "w") as f:
-        for metric, predictions in metric2predictions.items():
-            legend, auc, acc, low = do_plot(predictions, answers, legend=metric, metric='auc', output_dir=output_dir)
-            f.write('%s   AUC %.4f, Accuracy %.4f, TPR@0.1%%FPR of %.4f\n'%(legend, auc, acc, low))
 
-    plt.semilogx()
-    plt.semilogy()
-    plt.xlim(1e-5,1)
-    plt.ylim(1e-5,1)
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.plot([0, 1], [0, 1], ls='--', color='gray')
-    plt.subplots_adjust(bottom=.18, left=.18, top=.96, right=.96)
-    plt.legend(fontsize=8)
-    plt.savefig(f"{output_dir}/auc_{dataset_year}.png")
+    def classify_metrics():
+        general, min_k, min_kpp = [], [], []
+        for metric, predictions in metric2predictions.items():
+            if "Min_" in metric:
+                if "++" in metric:
+                    min_kpp.append((metric, predictions))
+                else:
+                    min_k.append((metric, predictions))
+            else:
+                general.append((metric, predictions))
+        return general, min_k, min_kpp
+
+    def render_group(group_entries, filename_suffix, title_hint, writer):
+        if not group_entries:
+            return
+        plt.figure(figsize=(6, 4.5))
+        for metric, predictions in group_entries:
+            legend, auc, acc, low = do_plot(predictions, answers, legend=metric, metric='auc', output_dir=output_dir)
+            writer.write('%s   AUC %.4f, Accuracy %.4f, TPR@0.1%%FPR of %.4f\n' % (legend, auc, acc, low))
+
+        plt.semilogx()
+        plt.semilogy()
+        plt.xlim(1e-5, 1)
+        plt.ylim(1e-5, 1)
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.plot([0, 1], [0, 1], ls='--', color='gray')
+        plt.subplots_adjust(bottom=.18, left=.18, top=.96, right=.96)
+        plt.legend(fontsize=8)
+        plt.savefig(f"{output_dir}/auc_{dataset_year}{filename_suffix}.png")
+        plt.close()
+
+    groups = classify_metrics()
+    suffixes = [("", "all metrics"), ("_min_k", "Min-k metrics"), ("_min_kpp", "Min-k++ metrics")]
+
+    with open(f"{output_dir}/auc_{dataset_year}.txt", "w") as f:
+        for (entries, (suffix, title)) in zip(groups, suffixes):
+            render_group(entries, suffix, title, f)
 
 
 def load_jsonl(input_path):
